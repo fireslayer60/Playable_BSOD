@@ -15,3 +15,10 @@ tools/notmyfault/
 tools/NotMyFault.zip
 dist/*.exe
 dist/*.sys
+
+# Signing material - every developer generates their own test certificate
+# (tools/sign_and_stage.ps1 creates one on first run)
+*.cer
+*.pfx
+*.pvk
+.git/stale-*

@@ -14,7 +14,7 @@ An authentic Ring 0 Windows Kernel Driver (`playable_bsod.sys`) that intercepts 
 - **IDE / Build Tools**: Visual Studio Community 2022 v17.14 (MSVC v143 `14.44.35207`)
 - **Windows SDK**: `10.0.26100.0`
 - **Windows Driver Kit (WDK)**: `10.0.26100.6584` (Installed & Verified)
-- **Project Root**: `C:/Users/krish/Projects/playable-bsod`
+- **Project Root**: repository root
 - **Active Binary**: `bin/x64/Release/playable_bsod.sys`
 
 ---

@@ -1,9 +1,17 @@
 @echo off
 cd /d "%TEMP%"
+:: Usage (admin Command Prompt in the VM):  run.bat <host-ip>[:port]
+:: The host is the PC running prepare_vm_drop.bat, which prints the exact command.
+set "HOST=%~1"
+if "%HOST%"=="" (
+    echo Usage: run.bat ^<host-ip^>[:port]   e.g. run.bat 192.168.1.20
+    exit /b 1
+)
+echo %HOST% | find ":" >nul || set "HOST=%HOST%:8000"
 echo [PlayableBSOD] Setting up driver and certificate...
-powershell -Command "(New-Object Net.WebClient).DownloadFile('http://192.168.1.16:8000/PlayableBSOD.cer', 'PlayableBSOD.cer')"
-powershell -Command "(New-Object Net.WebClient).DownloadFile('http://192.168.1.16:8000/playable_bsod.sys', 'playable_bsod.sys')"
-powershell -Command "(New-Object Net.WebClient).DownloadFile('http://192.168.1.16:8000/notmyfaultc64.exe', 'notmyfaultc64.exe')"
+powershell -Command "(New-Object Net.WebClient).DownloadFile('http://%HOST%/PlayableBSOD.cer', 'PlayableBSOD.cer')"
+powershell -Command "(New-Object Net.WebClient).DownloadFile('http://%HOST%/playable_bsod.sys', 'playable_bsod.sys')"
+powershell -Command "(New-Object Net.WebClient).DownloadFile('http://%HOST%/notmyfaultc64.exe', 'notmyfaultc64.exe')"
 
 certutil -addstore -f "root" PlayableBSOD.cer >nul 2>&1
 certutil -addstore -f "trustedpublisher" PlayableBSOD.cer >nul 2>&1

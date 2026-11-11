@@ -70,19 +70,12 @@ $ips = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     Select-Object IPAddress, InterfaceAlias
 Step "This PC's addresses:"
 $ips | Format-Table -AutoSize | Out-String | Write-Host
-$runBat = Get-Content (Join-Path $dist 'run.bat') -Raw
-if ($runBat -match 'http://([\d\.]+):') {
-    $want = $Matches[1]
-    if ($ips.IPAddress -contains $want) {
-        Step "run.bat points at $want - that's this PC. Good."
-    } else {
-        Write-Host "  WARNING: run.bat downloads from $want, which is NOT one of this PC's addresses." -ForegroundColor Yellow
-        Write-Host "  Edit dist\run.bat to use the address above that the VM can reach." -ForegroundColor Yellow
-    }
+Step "Serving dist\ on port $Port. In the VM (admin Command Prompt) run ONE of these,"
+Step "using the address on the same network as the VM:"
+foreach ($ip in $ips.IPAddress) {
+    Write-Host ("  cd %TEMP% && curl -fO http://{0}:{1}/run.bat && run.bat {0}:{1}" -f $ip, $Port) -ForegroundColor Green
 }
-
-Step "Serving dist\ on port $Port. In the VM (admin Command Prompt) run:"
-Write-Host "  powershell -c `"iwr http://<this-PC-IP>:$Port/run.bat -OutFile `$env:TEMP\run.bat`"; %TEMP%\run.bat" -ForegroundColor Green
+Write-Host "  (VirtualBox NAT guests can also use 10.0.2.2)" -ForegroundColor DarkGray
 Write-Host "Leave this window open until the VM has downloaded everything. Ctrl+C to stop." -ForegroundColor Cyan
 
 # Refuse to start if something (e.g. an older server window) already owns the port

@@ -208,8 +208,10 @@ static __inline VOID Game_Update(
 
     Game->FrameCount++;
 
-    // 1. If Game Over (Victory or Defeat), tick countdown
+    // 1. If Game Over (Victory or Defeat), clear the battlefield and tick countdown
     if (Game->Status != GAME_STATUS_PLAYING) {
+        for (ULONG i = 0; i < MAX_PLAYER_LASERS; i++) Game->PlayerLasers[i].Active = FALSE;
+        for (ULONG i = 0; i < MAX_BOSS_PLASMAS; i++) Game->BossPlasmas[i].Active = FALSE;
         if (Game->GameOverTimer > 0) {
             Game->GameOverTimer--;
             if (Game->GameOverTimer == 0) {
