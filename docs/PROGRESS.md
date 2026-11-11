@@ -138,3 +138,14 @@ An authentic Ring 0 Windows Kernel Driver (`playable_bsod.sys`) that intercepts 
 3. (Optional) Attach WinDbg/DebugView: look for `Display adapter VVVV:DDDD`, `TSC calibrated`, `Armed: legacy callback=1, reason callback=1`.
 4. Crash with NotMyFault. Note on the panel: **TRAP SOURCE**, **MODE SOURCE**, **RESOLUTION**, **PORT 0x64 STATUS**.
 5. Check: arrows/space respond, frame rate feels like 60 FPS, win/lose countdown reboots the VM.
+
+### First VM test: 2026-11-11 (VirtualBox, Windows 11 guest, Microsoft Basic Display Adapter)
+**It works on a real crash.** Panel showed:
+- `TRAP SOURCE: SecondaryDumpData CB`: the dump-time callback fired first; the play-once guard stopped the classic callback from restarting the game.
+- `MODE SOURCE: LIVE: BOCHS VBE`, 1024x768, framebuffer at `0xE0000000`, write-combined.
+- `__rdtsc() @ 2687 MHz` (calibration OK); keyboard input via the 8042 worked (firing, 96 events).
+
+Issues found and fixed in the follow-up:
+1. **Laggy.** Every frame cleared and redrew the arena and right panel (about 1.4 MB of VRAM writes), and VirtualBox tracks every framebuffer write for the host window. The game now draws into a non-paged back buffer and `Render_Present` copies only changed pixels (tracked by a shadow buffer): **about 16 KB/frame, 82x fewer VRAM writes** in a 600-frame simulated fight. The keyboard is polled every 0.25 ms instead of in a tight loop (each port read is a VM exit).
+2. **Stuck after ESC.** ESC returned to Windows, which finished the dump ("100% complete") and then sat there because `AutoReboot=0`. ESC now shows "ABORTED :: REBOOTING" and resets the machine.
+3. GUI NotMyFault needs the Windows App Runtime: `run.bat` now fetches `notmyfaultc64.exe`; crash with `notmyfaultc64.exe /accepteula crash 1`.

@@ -466,7 +466,8 @@ static VOID RunGameOnce(const char *TrapSource)
     if (g_Context.Framebuffer.MappedBase == NULL) return;
 
     Framebuffer_RefreshLiveMode(&g_Context.Framebuffer, &g_Context.Adapter);
-    ExecuteBareMetalGameLoop(&g_Context.Framebuffer, TrapSource);
+    ExecuteBareMetalGameLoop(&g_Context.Framebuffer, TrapSource,
+                             g_Context.BackBuffer, g_Context.ShadowBuffer);
 }
 
 // Runs while the crash dump is being written (only if a dump is configured).
@@ -519,27 +520,36 @@ static const char *ModeSourceName(FB_MODE_SOURCE Source)
     }
 }
 
-VOID RenderStaticBackdrop(PFRAMEBUFFER_CONFIG Fb, const char *TrapSource)
+VOID RenderStaticBackdrop(PRENDER_CONTEXT Rc, const char *TrapSource)
 {
-    if (!Fb || !Fb->VirtualBase) return;
+    if (!Rc || !Rc->Screen || !Rc->Screen->VirtualBase) return;
 
-    // 1. Clear the whole physical screen to dark space canvas
-    Rasterizer_Clear(Fb, COLOR_NAVY);
+    PFRAMEBUFFER_CONFIG Scr = Rc->Screen;          // real screen: diagnostics + background
+    PFRAMEBUFFER_CONFIG Fb  = Render_Target(Rc);   // where the canvas is drawn
 
-    // 2. Deterministic retro starfield across the whole physical screen
-    ULONG64 area = (ULONG64)Fb->Width * Fb->Height;
+    // 1. Clear the whole physical screen (and the canvas buffer) to dark space
+    Rasterizer_Clear(Scr, COLOR_NAVY);
+    if (Rc->Buffered) Rasterizer_Clear(Fb, COLOR_NAVY);
+
+    // 2. Deterministic retro starfield across the whole physical screen.
+    //    Stars inside the canvas also go into the back buffer so Present
+    //    doesn't paint over them.
+    ULONG64 area = (ULONG64)Scr->Width * Scr->Height;
     ULONG starCount = (ULONG)((150ULL * area) / ((ULONG64)CANVAS_WIDTH * CANVAS_HEIGHT));
     if (starCount > 1200) starCount = 1200;
 
     ULONG seed = 0x1337BEEF;
     for (ULONG i = 0; i < starCount; i++) {
         seed = seed * 1103515245 + 12345;
-        ULONG sx = seed % Fb->Width;
+        ULONG sx = seed % Scr->Width;
         seed = seed * 1103515245 + 12345;
-        ULONG sy = seed % Fb->Height;
+        ULONG sy = seed % Scr->Height;
         seed = seed * 1103515245 + 12345;
         ULONG starColor = (seed % 4 == 0) ? COLOR_CYAN : ((seed % 4 == 1) ? COLOR_YELLOW : COLOR_WHITE);
-        Rasterizer_PlotPixelPhys(Fb, sx, sy, starColor);
+        Rasterizer_PlotPixelPhys(Scr, sx, sy, starColor);
+        if (Rc->Buffered && sx >= Scr->OriginX && sy >= Scr->OriginY) {
+            Rasterizer_PlotPixelPhys(Fb, sx - Scr->OriginX, sy - Scr->OriginY, starColor);
+        }
     }
 
     // 3. Draw Main Retro Game Cabinet Frame & Window Borders
@@ -566,24 +576,24 @@ VOID RenderStaticBackdrop(PFRAMEBUFFER_CONFIG Fb, const char *TrapSource)
     Rasterizer_DrawString(Fb, 240, 166, "31 (HIGH_LEVEL)", COLOR_YELLOW, COLOR_TRANSPARENT);
 
     Rasterizer_DrawString(Fb, 96, 186, "VRAM PHYS BASE :", COLOR_WHITE, COLOR_TRANSPARENT);
-    Rasterizer_DrawHex(Fb, 240, 186, Fb->PhysicalBase, (Fb->PhysicalBase > 0xFFFFFFFFULL) ? 12 : 8, COLOR_GREEN, COLOR_TRANSPARENT);
+    Rasterizer_DrawHex(Fb, 240, 186, Scr->PhysicalBase, (Scr->PhysicalBase > 0xFFFFFFFFULL) ? 12 : 8, COLOR_GREEN, COLOR_TRANSPARENT);
 
     Rasterizer_DrawString(Fb, 96, 206, "VRAM VIRT BASE :", COLOR_WHITE, COLOR_TRANSPARENT);
-    Rasterizer_DrawHex(Fb, 240, 206, (ULONG64)Fb->VirtualBase, 16, COLOR_GREEN, COLOR_TRANSPARENT);
+    Rasterizer_DrawHex(Fb, 240, 206, (ULONG64)Scr->VirtualBase, 16, COLOR_GREEN, COLOR_TRANSPARENT);
 
     Rasterizer_DrawString(Fb, 96, 226, "RESOLUTION     :", COLOR_WHITE, COLOR_TRANSPARENT);
-    Rasterizer_DrawInt(Fb, 240, 226, Fb->Width, COLOR_CYAN, COLOR_TRANSPARENT);
-    Rasterizer_DrawString(Fb, (Fb->Width >= 1000) ? 275 : 267, 226, "x", COLOR_WHITE, COLOR_TRANSPARENT);
-    Rasterizer_DrawInt(Fb, (Fb->Width >= 1000) ? 287 : 279, 226, Fb->Height, COLOR_CYAN, COLOR_TRANSPARENT);
+    Rasterizer_DrawInt(Fb, 240, 226, Scr->Width, COLOR_CYAN, COLOR_TRANSPARENT);
+    Rasterizer_DrawString(Fb, (Scr->Width >= 1000) ? 275 : 267, 226, "x", COLOR_WHITE, COLOR_TRANSPARENT);
+    Rasterizer_DrawInt(Fb, (Scr->Width >= 1000) ? 287 : 279, 226, Scr->Height, COLOR_CYAN, COLOR_TRANSPARENT);
     Rasterizer_DrawString(Fb, 330, 226, "(32 BPP ARGB)", COLOR_GRAY, COLOR_TRANSPARENT);
 
     Rasterizer_DrawString(Fb, 96, 246, "PIXEL STRIDE   :", COLOR_WHITE, COLOR_TRANSPARENT);
-    Rasterizer_DrawInt(Fb, 240, 246, Fb->PixelsPerScanLine, COLOR_CYAN, COLOR_TRANSPARENT);
+    Rasterizer_DrawInt(Fb, 240, 246, Scr->PixelsPerScanLine, COLOR_CYAN, COLOR_TRANSPARENT);
     Rasterizer_DrawString(Fb, 280, 246, "px / scanline", COLOR_GRAY, COLOR_TRANSPARENT);
 
     Rasterizer_DrawString(Fb, 96, 266, "MEMORY ATTR    :", COLOR_WHITE, COLOR_TRANSPARENT);
-    Rasterizer_DrawString(Fb, 240, 266, Fb->WriteCombined ? "WRITE-COMBINED" : "UNCACHED",
-        Fb->WriteCombined ? COLOR_GREEN : COLOR_YELLOW, COLOR_TRANSPARENT);
+    Rasterizer_DrawString(Fb, 240, 266, Scr->WriteCombined ? "WRITE-COMBINED" : "UNCACHED",
+        Scr->WriteCombined ? COLOR_GREEN : COLOR_YELLOW, COLOR_TRANSPARENT);
 
     Rasterizer_DrawString(Fb, 96, 286, "TIMING ENGINE  :", COLOR_WHITE, COLOR_TRANSPARENT);
     {
@@ -598,8 +608,8 @@ VOID RenderStaticBackdrop(PFRAMEBUFFER_CONFIG Fb, const char *TrapSource)
     }
 
     Rasterizer_DrawString(Fb, 96, 306, "MODE SOURCE    :", COLOR_WHITE, COLOR_TRANSPARENT);
-    Rasterizer_DrawString(Fb, 240, 306, ModeSourceName(Fb->ModeSource),
-        (Fb->ModeSource == FbModeDefault) ? COLOR_RED : COLOR_GREEN, COLOR_TRANSPARENT);
+    Rasterizer_DrawString(Fb, 240, 306, ModeSourceName(Scr->ModeSource),
+        (Scr->ModeSource == FbModeDefault) ? COLOR_RED : COLOR_GREEN, COLOR_TRANSPARENT);
 
     Rasterizer_DrawString(Fb, 96, 326, "CRT RUNTIME    :", COLOR_WHITE, COLOR_TRANSPARENT);
     Rasterizer_DrawString(Fb, 240, 326, "NONE (ZERO DEPS)", COLOR_MAGENTA, COLOR_TRANSPARENT);
@@ -620,7 +630,7 @@ VOID RenderStaticBackdrop(PFRAMEBUFFER_CONFIG Fb, const char *TrapSource)
         COLOR_GREEN, COLOR_TRANSPARENT);
 
     Rasterizer_DrawString(Fb, 84, 682,
-        "[ CONTROLS       ]: [LEFT / A] = Steer | [RIGHT / D] = Steer | [SPACE] = Fire | [ESC] = Abort.",
+        "[ CONTROLS       ]: [LEFT / A] = Steer | [RIGHT / D] = Steer | [SPACE] = Fire | [ESC] = Reboot.",
         COLOR_YELLOW, COLOR_TRANSPARENT);
 }
 
@@ -689,12 +699,17 @@ VOID RenderDynamicFrame(PFRAMEBUFFER_CONFIG Fb, PINPUT_STATE Input, ULONG Player
     Rasterizer_DrawInt(Fb, 670, 296, (LONG)Input->EventsProcessed, COLOR_GREEN, COLOR_TRANSPARENT);
 }
 
-VOID ExecuteBareMetalGameLoop(PFRAMEBUFFER_CONFIG Fb, const char *TrapSource)
+VOID ExecuteBareMetalGameLoop(PFRAMEBUFFER_CONFIG Screen, const char *TrapSource,
+                              PULONG BackBuffer, PULONG ShadowBuffer)
 {
-    if (!Fb || !Fb->VirtualBase) return;
+    if (!Screen || !Screen->VirtualBase) return;
+
+    RENDER_CONTEXT rc;
+    Render_Init(&rc, Screen, BackBuffer, ShadowBuffer);
+    PFRAMEBUFFER_CONFIG Fb = Render_Target(&rc);
 
     // 1. Render static arcade background, borders, and diagnostics
-    RenderStaticBackdrop(Fb, TrapSource);
+    RenderStaticBackdrop(&rc, TrapSource);
 
     // 2. Initialize hardware port I/O keyboard controller
     INPUT_STATE input;
@@ -708,12 +723,15 @@ VOID ExecuteBareMetalGameLoop(PFRAMEBUFFER_CONFIG Fb, const char *TrapSource)
 #if defined(_KERNEL_MODE)
     // Fixed 60 FPS using the TSC frequency calibrated at load time
     ULONG64 tscHz = Platform_GetTscHz();
-    const ULONG64 cyclesPerFrame = (tscHz ? tscHz : 3000000000ULL) / 60;
+    if (tscHz == 0) tscHz = 3000000000ULL;
+    const ULONG64 cyclesPerFrame = tscHz / 60;
+    // Poll the 8042 every ~0.25 ms while idle: each port read is a VM exit, so
+    // hammering it in a tight loop just burns the hypervisor's time.
+    const ULONG64 pollInterval = tscHz / 4000;
     ULONG64 nextFrame = __rdtsc() + cyclesPerFrame;
 
     while (!input.Exit) {
-        // Drain every byte the controller has queued this frame, so key-ups
-        // are never missed when several keys change at once.
+        // Drain every byte the controller has queued, so key-ups are never missed
         for (ULONG n = 0; n < 16 && Input_Poll(&input); n++) {
         }
 
@@ -721,12 +739,16 @@ VOID ExecuteBareMetalGameLoop(PFRAMEBUFFER_CONFIG Fb, const char *TrapSource)
 
         RenderDynamicFrame(Fb, &input, (ULONG)game.PlayerX);
         Game_RenderArena(Fb, &game, &input);
+        Render_Present(&rc);
 
-        // Hardware CPU Time-Stamp Counter frame rate throttle (keep polling
-        // the keyboard while we wait so the 8042 buffer never overflows)
+        // Wait for the next frame, polling the keyboard at a modest rate
+        ULONG64 lastPoll = __rdtsc();
         while ((LONG64)(__rdtsc() - nextFrame) < 0) {
-            if (Hardware_IsKeyAvailable()) {
-                Input_Poll(&input);
+            if (__rdtsc() - lastPoll >= pollInterval) {
+                lastPoll = __rdtsc();
+                if (Hardware_IsKeyAvailable()) {
+                    Input_Poll(&input);
+                }
             }
             _mm_pause();
         }
@@ -736,10 +758,26 @@ VOID ExecuteBareMetalGameLoop(PFRAMEBUFFER_CONFIG Fb, const char *TrapSource)
             nextFrame = __rdtsc() + cyclesPerFrame;
         }
     }
+
+    // ESC: the machine can't resume after a bugcheck, and with AutoReboot=0
+    // Windows would just sit on the finished dump screen, so reboot instead.
+    Rasterizer_FillRect(Fb, 150, 440, 720, 100, COLOR_BLACK);
+    Rasterizer_DrawRect(Fb, 146, 436, 728, 108, 3, COLOR_YELLOW);
+    Rasterizer_DrawStringScaled(Fb, 230, 465, "ABORTED :: REBOOTING", 2, COLOR_YELLOW, COLOR_TRANSPARENT);
+    Rasterizer_DrawString(Fb, 300, 505, "PORT 0x64 / 0xCF9 HARDWARE RESET", COLOR_WHITE, COLOR_TRANSPARENT);
+    Render_Present(&rc);
+    {
+        ULONG64 until = __rdtsc() + tscHz; // ~1 second so the message is readable
+        while ((LONG64)(__rdtsc() - until) < 0) {
+            _mm_pause();
+        }
+    }
+    Hardware_ResetSystem();
 #else
     // Headless / single-frame user mode fallback
     RenderDynamicFrame(Fb, &input, (ULONG)game.PlayerX);
     Game_RenderArena(Fb, &game, &input);
+    Render_Present(&rc);
 #endif
 }
 
@@ -764,7 +802,18 @@ NTSTATUS DriverEntry(
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
 
-    // 3. Register both bugcheck hooks; RunGameOnce ensures only the first plays.
+    // 3. Back buffer + shadow for flicker-free, minimal-VRAM-write rendering.
+    //    Allocated now: no allocation is possible at HIGH_LEVEL during a crash.
+    //    On failure the game simply draws straight to VRAM.
+    g_Context.BackBuffer = (PULONG)ExAllocatePool2(POOL_FLAG_NON_PAGED, CANVAS_PIXELS * sizeof(ULONG), DRIVER_TAG);
+    g_Context.ShadowBuffer = (PULONG)ExAllocatePool2(POOL_FLAG_NON_PAGED, CANVAS_PIXELS * sizeof(ULONG), DRIVER_TAG);
+    if (!g_Context.BackBuffer || !g_Context.ShadowBuffer) {
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL, "[PlayableBSOD] Back buffer allocation failed; drawing directly\n");
+        if (g_Context.BackBuffer) { ExFreePoolWithTag(g_Context.BackBuffer, DRIVER_TAG); g_Context.BackBuffer = NULL; }
+        if (g_Context.ShadowBuffer) { ExFreePoolWithTag(g_Context.ShadowBuffer, DRIVER_TAG); g_Context.ShadowBuffer = NULL; }
+    }
+
+    // 4. Register both bugcheck hooks; RunGameOnce ensures only the first plays.
     KeInitializeCallbackRecord(&g_Context.LegacyRecord);
     g_Context.LegacyRegistered = KeRegisterBugCheckCallback(
         &g_Context.LegacyRecord,
@@ -782,6 +831,8 @@ NTSTATUS DriverEntry(
 
     if (!g_Context.LegacyRegistered && !g_Context.ReasonRegistered) {
         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[PlayableBSOD] Failed to register any BugCheck callback\n");
+        if (g_Context.BackBuffer) ExFreePoolWithTag(g_Context.BackBuffer, DRIVER_TAG);
+        if (g_Context.ShadowBuffer) ExFreePoolWithTag(g_Context.ShadowBuffer, DRIVER_TAG);
         CleanupFramebuffer(&g_Context.Framebuffer);
         return STATUS_UNSUCCESSFUL;
     }
@@ -805,6 +856,15 @@ VOID DriverUnload(_In_ PDRIVER_OBJECT DriverObject)
     if (g_Context.ReasonRegistered) {
         KeDeregisterBugCheckReasonCallback(&g_Context.ReasonRecord);
         g_Context.ReasonRegistered = FALSE;
+    }
+
+    if (g_Context.BackBuffer) {
+        ExFreePoolWithTag(g_Context.BackBuffer, DRIVER_TAG);
+        g_Context.BackBuffer = NULL;
+    }
+    if (g_Context.ShadowBuffer) {
+        ExFreePoolWithTag(g_Context.ShadowBuffer, DRIVER_TAG);
+        g_Context.ShadowBuffer = NULL;
     }
 
     CleanupFramebuffer(&g_Context.Framebuffer);

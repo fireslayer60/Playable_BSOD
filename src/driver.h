@@ -93,6 +93,8 @@ typedef struct _DRIVER_CONTEXT {
     FRAMEBUFFER_CONFIG   Framebuffer;
     DISPLAY_ADAPTER_INFO Adapter;
     ULONG64              TscHz;          // Calibrated time-stamp counter frequency
+    PULONG               BackBuffer;     // CANVAS_WIDTH*CANVAS_HEIGHT pixels, non-paged
+    PULONG               ShadowBuffer;   // Same size: what is currently on screen
 } DRIVER_CONTEXT, *PDRIVER_CONTEXT;
 
 // Function prototypes
@@ -118,6 +120,11 @@ VOID BugCheckLegacyCallbackRoutine(
 // Clock speed shown on the diagnostics panel (0 = unknown / preview)
 ULONG64 Platform_GetTscHz(void);
 
-VOID RenderStaticBackdrop(PFRAMEBUFFER_CONFIG Fb, const char *TrapSource);
+struct _RENDER_CONTEXT;
+
+// Screen = real framebuffer (diagnostics are read from it); drawing goes to
+// Render_Target(Rc). BackBuffer/ShadowBuffer may be NULL (direct drawing).
+VOID RenderStaticBackdrop(struct _RENDER_CONTEXT *Rc, const char *TrapSource);
 VOID RenderDynamicFrame(PFRAMEBUFFER_CONFIG Fb, PINPUT_STATE Input, ULONG PlayerX);
-VOID ExecuteBareMetalGameLoop(PFRAMEBUFFER_CONFIG Fb, const char *TrapSource);
+VOID ExecuteBareMetalGameLoop(PFRAMEBUFFER_CONFIG Screen, const char *TrapSource,
+                              PULONG BackBuffer, PULONG ShadowBuffer);

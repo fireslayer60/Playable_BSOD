@@ -733,3 +733,86 @@ static __inline VOID Rasterizer_DrawBitmap16x16(
         }
     }
 }
+
+// ============================================================================
+// Back-buffered rendering
+//
+// All canvas drawing goes into a 1024x768 buffer in normal (non-paged) RAM.
+// Rasterizer_Present then copies ONLY pixels that differ from what is already
+// on screen (tracked in a shadow copy) into video memory. A typical frame
+// changes a few thousand pixels instead of ~1.4 million bytes, which matters
+// a lot in VMs where every VRAM write is tracked for the host display, and it
+// removes the clear-then-redraw flicker.
+// ============================================================================
+#define CANVAS_PIXELS        ((SIZE_T)CANVAS_WIDTH * CANVAS_HEIGHT)
+#define SHADOW_INVALID_PIXEL 0x00000001u   // Never produced by drawing (alpha 0)
+
+typedef struct _RENDER_CONTEXT {
+    PFRAMEBUFFER_CONFIG Screen;   // Real framebuffer (VRAM)
+    FRAMEBUFFER_CONFIG  Back;     // Canvas-sized RAM buffer descriptor
+    PULONG              Shadow;   // Last presented canvas contents
+    BOOLEAN             Buffered; // FALSE = draw straight to Screen (fallback)
+} RENDER_CONTEXT, *PRENDER_CONTEXT;
+
+// Where game/UI drawing should go
+static __inline PFRAMEBUFFER_CONFIG Render_Target(_In_ PRENDER_CONTEXT Rc)
+{
+    return Rc->Buffered ? &Rc->Back : Rc->Screen;
+}
+
+static __inline VOID Render_Init(
+    _Out_ PRENDER_CONTEXT Rc,
+    _In_ PFRAMEBUFFER_CONFIG Screen,
+    _In_opt_ PULONG BackBuffer,
+    _In_opt_ PULONG ShadowBuffer
+)
+{
+    Rc->Screen = Screen;
+    Rc->Shadow = ShadowBuffer;
+    Rc->Buffered = (BackBuffer != NULL && ShadowBuffer != NULL);
+
+    // The back buffer is exactly one canvas: no origin offset, full size
+    Rc->Back = *Screen;
+    Rc->Back.VirtualBase = BackBuffer;
+    Rc->Back.MappedBase = BackBuffer;
+    Rc->Back.Width = CANVAS_WIDTH;
+    Rc->Back.Height = CANVAS_HEIGHT;
+    Rc->Back.PixelsPerScanLine = CANVAS_WIDTH;
+    Rc->Back.BufferSize = CANVAS_PIXELS * 4;
+    Rc->Back.MappedSize = CANVAS_PIXELS * 4;
+    Rc->Back.OriginX = 0;
+    Rc->Back.OriginY = 0;
+
+    if (Rc->Buffered) {
+        // Force the first Present to write every visible canvas pixel
+        for (SIZE_T i = 0; i < CANVAS_PIXELS; i++) {
+            ShadowBuffer[i] = SHADOW_INVALID_PIXEL;
+        }
+    }
+}
+
+// Copy changed canvas pixels from the back buffer to the screen
+static __inline VOID Render_Present(_In_ PRENDER_CONTEXT Rc)
+{
+    if (!Rc->Buffered) return;
+
+    PFRAMEBUFFER_CONFIG scr = Rc->Screen;
+    ULONG w = Rasterizer_CanvasWidth(scr);
+    ULONG h = Rasterizer_CanvasHeight(scr);
+    const ULONG *back = (const ULONG *)Rc->Back.VirtualBase;
+    PULONG shadow = Rc->Shadow;
+    volatile ULONG *vram = (volatile ULONG *)scr->VirtualBase;
+
+    for (ULONG y = 0; y < h; y++) {
+        SIZE_T rowCanvas = (SIZE_T)y * CANVAS_WIDTH;
+        SIZE_T rowScreen = ((SIZE_T)(y + scr->OriginY) * scr->PixelsPerScanLine) + scr->OriginX;
+        for (ULONG x = 0; x < w; x++) {
+            ULONG c = back[rowCanvas + x];
+            if (c != shadow[rowCanvas + x]) {
+                shadow[rowCanvas + x] = c;
+                vram[rowScreen + x] = c;
+            }
+        }
+    }
+}
+

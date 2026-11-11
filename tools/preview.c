@@ -10,6 +10,7 @@ static FRAMEBUFFER_CONFIG g_Fb = { 0 };
 static BITMAPINFO g_Bmi = { 0 };
 static INPUT_STATE g_Input = { 0 };
 static GAME_STATE  g_Game = { 0 };
+static RENDER_CONTEXT g_Rc;
 
 static BOOL SaveBitmapFile(const char *filename, PFRAMEBUFFER_CONFIG Fb)
 {
@@ -143,16 +144,23 @@ int main(int argc, char **argv)
     printf("[PlayableBSOD] Simulated screen %lux%lu (stride %lu), canvas origin (%lu,%lu)\n",
         g_Fb.Width, g_Fb.Height, g_Fb.PixelsPerScanLine, g_Fb.OriginX, g_Fb.OriginY);
 
+    // Back buffer + shadow, exactly like the driver (exercises Render_Present)
+    PULONG backBuf = (PULONG)malloc(CANVAS_PIXELS * sizeof(ULONG));
+    PULONG shadowBuf = (PULONG)malloc(CANVAS_PIXELS * sizeof(ULONG));
+    Render_Init(&g_Rc, &g_Fb, backBuf, shadowBuf);
+    PFRAMEBUFFER_CONFIG target = Render_Target(&g_Rc);
+
     // 2. Initialize input engine and game state
     Input_Init(&g_Input);
     Game_Init(&g_Game);
 
     // 3. Render static backdrop once
-    RenderStaticBackdrop(&g_Fb, "DESKTOP PREVIEW");
+    RenderStaticBackdrop(&g_Rc, "DESKTOP PREVIEW");
 
     // 4. Initial dynamic frame render
-    RenderDynamicFrame(&g_Fb, &g_Input, (ULONG)g_Game.PlayerX);
-    Game_RenderArena(&g_Fb, &g_Game, &g_Input);
+    RenderDynamicFrame(target, &g_Input, (ULONG)g_Game.PlayerX);
+    Game_RenderArena(target, &g_Game, &g_Input);
+    Render_Present(&g_Rc);
 
     // 5. If headless / BMP only mode, export and quit
     if (bmpOnly) {
@@ -236,8 +244,9 @@ int main(int argc, char **argv)
         Game_Update(&g_Game, &g_Input);
 
         // Render dynamic telemetry & battle arena
-        RenderDynamicFrame(&g_Fb, &g_Input, (ULONG)g_Game.PlayerX);
-        Game_RenderArena(&g_Fb, &g_Game, &g_Input);
+        RenderDynamicFrame(target, &g_Input, (ULONG)g_Game.PlayerX);
+        Game_RenderArena(target, &g_Game, &g_Input);
+        Render_Present(&g_Rc);
 
         // Blit to screen
         SetDIBitsToDevice(
