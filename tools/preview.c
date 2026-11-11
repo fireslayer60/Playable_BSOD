@@ -31,7 +31,7 @@ static BOOL SaveBitmapFile(const char *filename, PFRAMEBUFFER_CONFIG Fb)
     bfh.bfSize = bfh.bfOffBits + (DWORD)Fb->BufferSize;
 
     bih.biSize = sizeof(BITMAPINFOHEADER);
-    bih.biWidth = (LONG)Fb->Width;
+    bih.biWidth = (LONG)Fb->PixelsPerScanLine; // rows are stride-wide in memory
     bih.biHeight = -(LONG)Fb->Height; // Negative height for top-down raster order
     bih.biPlanes = 1;
     bih.biBitCount = 32;
@@ -84,37 +84,71 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     return DefWindowProcA(hwnd, msg, wParam, lParam);
 }
 
+static void PrintUsage(void)
+{
+    printf("Usage: preview.exe [--res WIDTHxHEIGHT] [--stride PIXELS] [--bmp-only] [--out FILE.bmp]\n");
+    printf("  --res      Simulated screen size (default 1024x768), e.g. --res 1920x1080\n");
+    printf("  --stride   Pixels per scanline if larger than width (default = width)\n");
+    printf("  --bmp-only Render one frame to a BMP and exit (no window)\n");
+    printf("  --out      BMP output path (default playable_bsod_preview.bmp)\n");
+}
+
 int main(int argc, char **argv)
 {
     BOOL bmpOnly = FALSE;
-    if (argc > 1 && strcmp(argv[1], "--bmp-only") == 0) {
-        bmpOnly = TRUE;
+    const char *outFile = "playable_bsod_preview.bmp";
+    ULONG width = DEFAULT_FB_WIDTH, height = DEFAULT_FB_HEIGHT, stride = 0;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--bmp-only") == 0) {
+            bmpOnly = TRUE;
+        } else if (strcmp(argv[i], "--res") == 0 && i + 1 < argc) {
+            if (sscanf_s(argv[++i], "%lux%lu", &width, &height) != 2 || width < 320 || height < 200) {
+                printf("[ERROR] Bad --res value '%s' (expected e.g. 1920x1080)\n", argv[i]);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--stride") == 0 && i + 1 < argc) {
+            stride = (ULONG)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--out") == 0 && i + 1 < argc) {
+            outFile = argv[++i];
+        } else {
+            PrintUsage();
+            return 1;
+        }
     }
+    if (stride < width) stride = width;
 
     printf("===================================================================\n");
     printf("   PLAYABLE BSOD - PHASE 5 THE BOSS BATTLE & GAME LOOP PREVIEW     \n");
     printf("===================================================================\n\n");
 
     // 1. Configure the simulated framebuffer
-    g_Fb.Width = DEFAULT_FB_WIDTH;   // 1024
-    g_Fb.Height = DEFAULT_FB_HEIGHT; // 768
-    g_Fb.PixelsPerScanLine = DEFAULT_FB_WIDTH;
+    g_Fb.Width = width;
+    g_Fb.Height = height;
+    g_Fb.PixelsPerScanLine = stride;
     g_Fb.BitsPerPixel = DEFAULT_FB_BPP; // 32 bpp
     g_Fb.PhysicalBase = 0xF8000000ULL; // Simulated GOP VRAM base
     g_Fb.BufferSize = (SIZE_T)g_Fb.Height * g_Fb.PixelsPerScanLine * (g_Fb.BitsPerPixel / 8);
+    g_Fb.ModeSource = FbModePreview;
+    g_Fb.WriteCombined = TRUE;
+    Framebuffer_CenterCanvas(&g_Fb);
 
-    g_Fb.VirtualBase = malloc(g_Fb.BufferSize);
+    g_Fb.VirtualBase = calloc(1, g_Fb.BufferSize);
     if (!g_Fb.VirtualBase) {
         printf("[ERROR] Failed to allocate simulated framebuffer memory.\n");
         return 1;
     }
+    g_Fb.MappedBase = g_Fb.VirtualBase;
+    g_Fb.MappedSize = g_Fb.BufferSize;
+    printf("[PlayableBSOD] Simulated screen %lux%lu (stride %lu), canvas origin (%lu,%lu)\n",
+        g_Fb.Width, g_Fb.Height, g_Fb.PixelsPerScanLine, g_Fb.OriginX, g_Fb.OriginY);
 
     // 2. Initialize input engine and game state
     Input_Init(&g_Input);
     Game_Init(&g_Game);
 
     // 3. Render static backdrop once
-    RenderStaticBackdrop(&g_Fb);
+    RenderStaticBackdrop(&g_Fb, "DESKTOP PREVIEW");
 
     // 4. Initial dynamic frame render
     RenderDynamicFrame(&g_Fb, &g_Input, (ULONG)g_Game.PlayerX);
@@ -122,7 +156,7 @@ int main(int argc, char **argv)
 
     // 5. If headless / BMP only mode, export and quit
     if (bmpOnly) {
-        SaveBitmapFile("playable_bsod_preview.bmp", &g_Fb);
+        SaveBitmapFile(outFile, &g_Fb);
         printf("[PlayableBSOD] Headless mode: preview image generated successfully.\n");
         free(g_Fb.VirtualBase);
         return 0;
@@ -131,7 +165,7 @@ int main(int argc, char **argv)
     // 6. Set up DIB bitmap info for native window rendering
     ZeroMemory(&g_Bmi, sizeof(g_Bmi));
     g_Bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    g_Bmi.bmiHeader.biWidth = (LONG)g_Fb.Width;
+    g_Bmi.bmiHeader.biWidth = (LONG)g_Fb.PixelsPerScanLine;
     g_Bmi.bmiHeader.biHeight = -(LONG)g_Fb.Height; // Top-down
     g_Bmi.bmiHeader.biPlanes = 1;
     g_Bmi.bmiHeader.biBitCount = 32;
@@ -224,7 +258,7 @@ int main(int argc, char **argv)
     ReleaseDC(hwnd, hdc);
 
     // Save final frame
-    SaveBitmapFile("playable_bsod_preview.bmp", &g_Fb);
+    SaveBitmapFile(outFile, &g_Fb);
 
     free(g_Fb.VirtualBase);
     printf("[PlayableBSOD] Boss battle preview closed cleanly.\n");

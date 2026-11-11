@@ -255,7 +255,12 @@ static const USHORT g_BitmapShield16x16[16] = {
 
 // Plot single pixel safely with 2D bounds check
 // Math: Offset = (y * Stride) + x
-static __inline VOID Rasterizer_PlotPixel(
+// ---------------------------------------------------------------------------
+// Physical primitives: coordinates are real screen pixels (no canvas origin).
+// These are the ONLY functions that touch video memory; everything is clipped
+// against the real Width/Height here.
+// ---------------------------------------------------------------------------
+static __inline VOID Rasterizer_PlotPixelPhys(
     _In_ PFRAMEBUFFER_CONFIG Fb,
     _In_ ULONG x,
     _In_ ULONG y,
@@ -266,12 +271,11 @@ static __inline VOID Rasterizer_PlotPixel(
         return;
     }
 
-    ULONG pixelOffset = (y * Fb->PixelsPerScanLine) + x;
+    SIZE_T pixelOffset = ((SIZE_T)y * Fb->PixelsPerScanLine) + x;
     ((volatile ULONG*)Fb->VirtualBase)[pixelOffset] = color;
 }
 
-// Fill solid rectangle
-static __inline VOID Rasterizer_FillRect(
+static __inline VOID Rasterizer_FillRectPhys(
     _In_ PFRAMEBUFFER_CONFIG Fb,
     _In_ ULONG x,
     _In_ ULONG y,
@@ -284,18 +288,45 @@ static __inline VOID Rasterizer_FillRect(
         return;
     }
 
-    ULONG xMax = x + width;
-    ULONG yMax = y + height;
-    if (xMax > Fb->Width) xMax = Fb->Width;
-    if (yMax > Fb->Height) yMax = Fb->Height;
+    ULONG xMax = (width  > Fb->Width  - x) ? Fb->Width  : x + width;
+    ULONG yMax = (height > Fb->Height - y) ? Fb->Height : y + height;
 
     volatile ULONG *vram = (volatile ULONG*)Fb->VirtualBase;
     for (ULONG py = y; py < yMax; py++) {
-        ULONG rowStart = py * Fb->PixelsPerScanLine;
+        SIZE_T rowStart = (SIZE_T)py * Fb->PixelsPerScanLine;
         for (ULONG px = x; px < xMax; px++) {
             vram[rowStart + px] = color;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Logical primitives: coordinates are on the 1024x768 canvas, which is placed
+// at (OriginX, OriginY) on the real screen. All higher-level drawing uses these.
+// ---------------------------------------------------------------------------
+static __inline VOID Rasterizer_PlotPixel(
+    _In_ PFRAMEBUFFER_CONFIG Fb,
+    _In_ ULONG x,
+    _In_ ULONG y,
+    _In_ ULONG color
+)
+{
+    if (!Fb) return;
+    Rasterizer_PlotPixelPhys(Fb, x + Fb->OriginX, y + Fb->OriginY, color);
+}
+
+// Fill solid rectangle (logical canvas coordinates)
+static __inline VOID Rasterizer_FillRect(
+    _In_ PFRAMEBUFFER_CONFIG Fb,
+    _In_ ULONG x,
+    _In_ ULONG y,
+    _In_ ULONG width,
+    _In_ ULONG height,
+    _In_ ULONG color
+)
+{
+    if (!Fb) return;
+    Rasterizer_FillRectPhys(Fb, x + Fb->OriginX, y + Fb->OriginY, width, height, color);
 }
 
 // Draw hollow/bordered rectangle with specified border thickness
@@ -346,7 +377,7 @@ static __inline VOID Rasterizer_DrawLine(
     LONG err = dx + dy;
 
     while (TRUE) {
-        if (x0 >= 0 && (ULONG)x0 < Fb->Width && y0 >= 0 && (ULONG)y0 < Fb->Height) {
+        if (x0 >= 0 && y0 >= 0) {
             Rasterizer_PlotPixel(Fb, (ULONG)x0, (ULONG)y0, color);
         }
         if (x0 == x1 && y0 == y1) break;
@@ -363,6 +394,19 @@ static __inline VOID Rasterizer_DrawLine(
     }
 }
 
+// Visible extent of the logical canvas (canvas size, clipped to the real screen)
+static __inline ULONG Rasterizer_CanvasWidth(_In_ PFRAMEBUFFER_CONFIG Fb)
+{
+    ULONG avail = (Fb->Width > Fb->OriginX) ? Fb->Width - Fb->OriginX : 0;
+    return (avail < CANVAS_WIDTH) ? avail : CANVAS_WIDTH;
+}
+
+static __inline ULONG Rasterizer_CanvasHeight(_In_ PFRAMEBUFFER_CONFIG Fb)
+{
+    ULONG avail = (Fb->Height > Fb->OriginY) ? Fb->Height - Fb->OriginY : 0;
+    return (avail < CANVAS_HEIGHT) ? avail : CANVAS_HEIGHT;
+}
+
 // Clear entire screen to solid color
 static __inline VOID Rasterizer_Clear(
     _In_ PFRAMEBUFFER_CONFIG Fb,
@@ -370,7 +414,8 @@ static __inline VOID Rasterizer_Clear(
 )
 {
     if (!Fb || !Fb->VirtualBase) return;
-    Rasterizer_FillRect(Fb, 0, 0, Fb->Width, Fb->Height, color);
+    // Whole physical screen, not just the canvas
+    Rasterizer_FillRectPhys(Fb, 0, 0, Fb->Width, Fb->Height, color);
 }
 
 // Draw single 8x8 character
@@ -383,7 +428,7 @@ static __inline VOID Rasterizer_DrawChar(
     _In_ ULONG bgColor
 )
 {
-    if (!Fb || !Fb->VirtualBase || x >= Fb->Width || y >= Fb->Height) return;
+    if (!Fb || !Fb->VirtualBase || x >= Rasterizer_CanvasWidth(Fb) || y >= Rasterizer_CanvasHeight(Fb)) return;
 
     UCHAR ascii = (UCHAR)c;
     if (ascii < 32 || ascii > 126) {
@@ -394,12 +439,12 @@ static __inline VOID Rasterizer_DrawChar(
 
     for (ULONG row = 0; row < 8; row++) {
         ULONG py = y + row;
-        if (py >= Fb->Height) break;
+        if (py >= Rasterizer_CanvasHeight(Fb)) break;
 
         UCHAR rowBits = glyph[row];
         for (ULONG col = 0; col < 8; col++) {
             ULONG px = x + col;
-            if (px >= Fb->Width) break;
+            if (px >= Rasterizer_CanvasWidth(Fb)) break;
 
             BOOLEAN isPixelSet = (rowBits & (0x80 >> col)) != 0;
             if (isPixelSet) {
@@ -422,7 +467,7 @@ static __inline VOID Rasterizer_DrawCharScaled(
     _In_ ULONG bgColor
 )
 {
-    if (!Fb || !Fb->VirtualBase || scale == 0 || x >= Fb->Width || y >= Fb->Height) return;
+    if (!Fb || !Fb->VirtualBase || scale == 0 || x >= Rasterizer_CanvasWidth(Fb) || y >= Rasterizer_CanvasHeight(Fb)) return;
 
     UCHAR ascii = (UCHAR)c;
     if (ascii < 32 || ascii > 126) {
@@ -433,12 +478,12 @@ static __inline VOID Rasterizer_DrawCharScaled(
 
     for (ULONG row = 0; row < 8; row++) {
         ULONG py = y + (row * scale);
-        if (py >= Fb->Height) break;
+        if (py >= Rasterizer_CanvasHeight(Fb)) break;
 
         UCHAR rowBits = glyph[row];
         for (ULONG col = 0; col < 8; col++) {
             ULONG px = x + (col * scale);
-            if (px >= Fb->Width) break;
+            if (px >= Rasterizer_CanvasWidth(Fb)) break;
 
             BOOLEAN isPixelSet = (rowBits & (0x80 >> col)) != 0;
             if (isPixelSet) {
@@ -475,7 +520,7 @@ static __inline VOID Rasterizer_DrawString(
         Rasterizer_DrawChar(Fb, cursorX, cursorY, text[i], fgColor, bgColor);
         cursorX += 8;
 
-        if (cursorX + 8 > Fb->Width) {
+        if (cursorX + 8 > Rasterizer_CanvasWidth(Fb)) {
             cursorX = x;
             cursorY += 10;
         }
@@ -510,7 +555,7 @@ static __inline VOID Rasterizer_DrawStringScaled(
         Rasterizer_DrawCharScaled(Fb, cursorX, cursorY, text[i], scale, fgColor, bgColor);
         cursorX += charWidth;
 
-        if (cursorX + charWidth > Fb->Width) {
+        if (cursorX + charWidth > Rasterizer_CanvasWidth(Fb)) {
             cursorX = x;
             cursorY += charHeight;
         }
@@ -622,17 +667,17 @@ static __inline VOID Rasterizer_DrawSprite(
     _In_ ULONG scale
 )
 {
-    if (!Fb || !Fb->VirtualBase || !spriteData || scale == 0 || x >= Fb->Width || y >= Fb->Height) {
+    if (!Fb || !Fb->VirtualBase || !spriteData || scale == 0 || x >= Rasterizer_CanvasWidth(Fb) || y >= Rasterizer_CanvasHeight(Fb)) {
         return;
     }
 
     for (ULONG sy = 0; sy < height; sy++) {
         ULONG py = y + (sy * scale);
-        if (py >= Fb->Height) break;
+        if (py >= Rasterizer_CanvasHeight(Fb)) break;
 
         for (ULONG sx = 0; sx < width; sx++) {
             ULONG px = x + (sx * scale);
-            if (px >= Fb->Width) break;
+            if (px >= Rasterizer_CanvasWidth(Fb)) break;
 
             ULONG color = spriteData[sy * width + sx];
             // Alpha test: 0x00xxxxxx is treated as transparent
@@ -658,18 +703,18 @@ static __inline VOID Rasterizer_DrawBitmap16x16(
     _In_ ULONG bgColor
 )
 {
-    if (!Fb || !Fb->VirtualBase || !bitmap || scale == 0 || x >= Fb->Width || y >= Fb->Height) {
+    if (!Fb || !Fb->VirtualBase || !bitmap || scale == 0 || x >= Rasterizer_CanvasWidth(Fb) || y >= Rasterizer_CanvasHeight(Fb)) {
         return;
     }
 
     for (ULONG row = 0; row < 16; row++) {
         ULONG py = y + (row * scale);
-        if (py >= Fb->Height) break;
+        if (py >= Rasterizer_CanvasHeight(Fb)) break;
 
         USHORT rowBits = bitmap[row];
         for (ULONG col = 0; col < 16; col++) {
             ULONG px = x + (col * scale);
-            if (px >= Fb->Width) break;
+            if (px >= Rasterizer_CanvasWidth(Fb)) break;
 
             BOOLEAN isPixelSet = (rowBits & (0x8000 >> col)) != 0;
             if (isPixelSet) {

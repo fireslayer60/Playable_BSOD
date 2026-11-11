@@ -22,10 +22,12 @@ echo [3/4] Disabling automatic reboot on crash...
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\CrashControl" /v AutoReboot /t REG_DWORD /d 0 /f >nul 2>&1
 
 :: 4. Register and start driver
-echo [4/4] Starting Playable BSOD kernel driver...
+echo [4/4] Registering, recording display mode, and starting Playable BSOD kernel driver...
 sc stop playable_bsod >nul 2>&1
 sc delete playable_bsod >nul 2>&1
 sc create playable_bsod type= kernel binPath= "%~dp0playable_bsod.sys"
+:: Record the current resolution for the driver (it maps the framebuffer at load time)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$v = Get-CimInstance Win32_VideoController | Where-Object { $_.CurrentHorizontalResolution } | Select-Object -First 1; if ($v) { $k = 'HKLM:\SYSTEM\CurrentControlSet\Services\playable_bsod\Parameters'; New-Item -Path $k -Force | Out-Null; Set-ItemProperty -Path $k -Name Width -Value ([int]$v.CurrentHorizontalResolution) -Type DWord; Set-ItemProperty -Path $k -Name Height -Value ([int]$v.CurrentVerticalResolution) -Type DWord; Write-Host ('Recorded display mode: {0}x{1} ({2})' -f $v.CurrentHorizontalResolution, $v.CurrentVerticalResolution, $v.Name) } else { Write-Host 'Could not read display mode; driver will use live detection or 1024x768.' }"
 sc start playable_bsod
 
 echo.

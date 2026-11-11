@@ -19,6 +19,7 @@ typedef BYTE BOOLEAN;
 // Status Register Bits
 #define KBD_STATUS_OUT_FULL 0x01    // Bit 0: Output buffer full (1 = byte ready to read in 0x60)
 #define KBD_STATUS_IN_FULL  0x02    // Bit 1: Input buffer full (1 = controller busy receiving)
+#define KBD_STATUS_AUX_DATA 0x20    // Bit 5: Byte in 0x60 came from the PS/2 mouse (AUX), not the keyboard
 
 // ============================================================================
 // PS/2 Scancode Set 1 Definitions
@@ -77,11 +78,21 @@ static __inline UCHAR Hardware_InByte(USHORT port)
 #endif
 }
 
-// Check if keyboard controller has a byte ready in Port 0x60
+// Check if keyboard controller has a byte ready in Port 0x60.
+// Bytes from the PS/2 mouse share the same output buffer; they are read and
+// discarded here so mouse movement can never be mistaken for a keystroke
+// (a mouse packet byte of 0x01 would otherwise look like ESC and quit the game).
 static __inline BOOLEAN Hardware_IsKeyAvailable(void)
 {
 #if defined(_KERNEL_MODE)
-    return (Hardware_InByte(KBD_STATUS_PORT) & KBD_STATUS_OUT_FULL) != 0;
+    for (ULONG i = 0; i < 32; i++) {
+        UCHAR status = Hardware_InByte(KBD_STATUS_PORT);
+        if (status == 0xFF) return FALSE;                 // No 8042 present (floating bus)
+        if ((status & KBD_STATUS_OUT_FULL) == 0) return FALSE;
+        if ((status & KBD_STATUS_AUX_DATA) == 0) return TRUE; // Keyboard byte waiting
+        Hardware_InByte(KBD_DATA_PORT);                   // Discard mouse byte
+    }
+    return FALSE;
 #else
     return FALSE;
 #endif

@@ -91,6 +91,15 @@ static __inline VOID Hardware_ResetSystem(void)
         if ((__inbyte(KBD_STATUS_PORT) & KBD_STATUS_IN_FULL) == 0) break;
     }
     __outbyte(KBD_STATUS_PORT, 0xFE);
+    KeStallExecutionProcessor(50000);
+
+    // Fallback for machines without an 8042 (e.g. Hyper-V Gen2, many modern
+    // laptops): PCI Reset Control Register 0xCF9. Write SYS_RST first, then
+    // SYS_RST|RST_CPU (0x06) to trigger a hard reset.
+    __outbyte(0xCF9, 0x02);
+    KeStallExecutionProcessor(10);
+    __outbyte(0xCF9, 0x06);
+    KeStallExecutionProcessor(50000);
 
     // Halt CPU if reset is delayed
     for (;;) {

@@ -19,7 +19,7 @@ An authentic Ring 0 Windows Kernel Driver (`playable_bsod.sys`) that intercepts 
 
 ---
 
-## 3. The 5 Modular Phases (ALL PHASES COMPLETED 🎉)
+## 3. The 5 Modular Phases (ALL PHASES COMPLETED 🎉, real-crash hardening in §8)
 
 | Phase | Description | Status | Deliverables |
 | :--- | :--- | :--- | :--- |
@@ -107,3 +107,34 @@ An authentic Ring 0 Windows Kernel Driver (`playable_bsod.sys`) that intercepts 
   - Once the game-over countdown concludes, `Hardware_ResetSystem()` writes command `0xFE` to Port `0x64`, pulsing the CPU reset line for an instant cold system reboot.
 - **Interactive Desktop Preview (`preview.bat`)**:
   - Full 60 FPS interactive boss fight on the desktop with real-time ship controls, dual lasers, enrage transitions, and restart with `R`.
+
+---
+
+## 8. Session 2026-11-11: Hardening for a Real Crash (Claude takeover)
+
+> Phases 1-5 worked in the desktop preview but had never run on a real blue screen. This session fixed the problems that would stop it from working there. **Status: compiles cleanly (MinGW cross-check, `-Wall -Wextra`); preview verified at 1024x768, 1280x720, 1366x768, 1920x1080 and with a padded stride. Not yet tested in a VM. That is the next step.**
+
+### What changed
+| Area | Before | After |
+| :--- | :--- | :--- |
+| **Display mode** | Hardcoded 1024x768, stride = width | Live mode read at crash time from **VMware SVGA II** registers (VMware, VirtualBox VMSVGA/VBoxSVGA) or **Bochs VBE** (QEMU std-vga, VirtualBox VBoxVGA). Falls back to registry `Width`/`Height`/`Stride`, which the setup scripts fill from WMI, then to 1024x768. Panel shows `MODE SOURCE`. |
+| **Layout** | Absolute 1024x768 coordinates | Drawn on a fixed 1024x768 logical canvas centred on any resolution (`OriginX/Y`); starfield fills the whole screen. Physical vs logical primitives in `rasterizer.h`. |
+| **Framebuffer mapping** | Exactly 1024x768x4 | `max(8 MiB, mode size, FramebufferSize)` capped at 64 MiB, so a resolution change after load still fits. |
+| **PCI discovery** | Raw `0xCF8/0xCFC` port I/O on bus 0 (races the OS) | `HalGetBusDataByOffset`, buses 0-7, multifunction-aware, 64-bit BARs, prefers the prefetchable BAR. |
+| **Bugcheck hook** | `KbCallbackSecondaryDumpData` only (needs a crash dump to be written, can fire more than once) | Registers **both** `KeRegisterBugCheckCallback` and the reason callback; `RunGameOnce` interlocked guard. Panel shows `TRAP SOURCE` so the VM test reveals which one fired. |
+| **Frame timing** | Assumed 3.0 GHz | TSC calibrated at load against `KeQueryPerformanceCounter` (50 ms at DISPATCH_LEVEL); panel shows MHz. Keyboard is polled while waiting for the next frame. |
+| **Keyboard** | PS/2 mouse bytes read as scancodes (mouse movement could fake ESC) | Status bit 5 (AUX) bytes discarded; `0xFF` status detected and shown as `NO 8042 FOUND!`. |
+| **Reset** | `0xFE` to port 0x64 only | Falls back to PCI reset register `0xCF9` (needed on machines without an 8042). |
+| **Preview** | 1024x768 only | `preview.exe --res 1920x1080 [--stride N] [--bmp-only] [--out file.bmp]` |
+| **Repo** | No version control | git, with `.gitignore` for build outputs and third-party binaries |
+
+### VM choice (important)
+- **Do NOT use Hyper-V Gen2.** It is legacy-free: no i8042, so the game cannot read the keyboard (the panel will show `NO 8042 FOUND!`).
+- **Use VMware Workstation, VirtualBox, or QEMU** (UEFI guest). All emulate the i8042, and their GPUs match the live-mode readers above.
+
+### VM test checklist
+1. `build.bat`, sign as before, copy `bin\x64\Release\playable_bsod.sys` + `dist\*` to the VM.
+2. Run `dist\setup_and_start.bat` as admin. It should print `Recorded display mode: WxH`.
+3. (Optional) Attach WinDbg/DebugView: look for `Display adapter VVVV:DDDD`, `TSC calibrated`, `Armed: legacy callback=1, reason callback=1`.
+4. Crash with NotMyFault. Note on the panel: **TRAP SOURCE**, **MODE SOURCE**, **RESOLUTION**, **PORT 0x64 STATUS**.
+5. Check: arrows/space respond, frame rate feels like 60 FPS, win/lose countdown reboots the VM.
