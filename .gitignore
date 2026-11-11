@@ -1,0 +1,17 @@
+# Build outputs
+bin/
+obj/
+*.obj
+*.pdb
+/playable_bsod.sys
+.vs/
+*.vcxproj.user
+
+# Generated previews (regenerate with preview.bat --bmp-only)
+*.bmp
+
+# Third-party binaries (Sysinternals NotMyFault) - download separately
+tools/notmyfault/
+tools/NotMyFault.zip
+dist/*.exe
+dist/*.sys
