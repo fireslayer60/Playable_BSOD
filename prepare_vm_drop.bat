@@ -20,6 +20,9 @@ echo ===================================================================
 echo [PlayableBSOD] 3/3 Serving dist\ to the VM
 echo ===================================================================
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\sign_and_stage.ps1" -Serve
+echo.
+echo [PlayableBSOD] The server has stopped. If that was unexpected, see the message above.
+pause
 goto :eof
 
 :fail

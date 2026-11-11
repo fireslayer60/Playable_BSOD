@@ -85,6 +85,15 @@ Step "Serving dist\ on port $Port. In the VM (admin Command Prompt) run:"
 Write-Host "  powershell -c `"iwr http://<this-PC-IP>:$Port/run.bat -OutFile `$env:TEMP\run.bat`"; %TEMP%\run.bat" -ForegroundColor Green
 Write-Host "Leave this window open until the VM has downloaded everything. Ctrl+C to stop." -ForegroundColor Cyan
 
+# Refuse to start if something (e.g. an older server window) already owns the port
+$busy = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+if ($busy) {
+    $owner = (Get-Process -Id $busy[0].OwningProcess -ErrorAction SilentlyContinue).ProcessName
+    Write-Host "  ERROR: port $Port is already in use by '$owner' (PID $($busy[0].OwningProcess))." -ForegroundColor Red
+    Write-Host "  Close the old server window (or end that process) and run prepare_vm_drop.bat again." -ForegroundColor Red
+    exit 1
+}
+
 # Prefer Python's http.server (the firewall likely already allows it); the
 # real python, not the Microsoft Store stub, is required.
 $py = Get-Command python -ErrorAction SilentlyContinue
